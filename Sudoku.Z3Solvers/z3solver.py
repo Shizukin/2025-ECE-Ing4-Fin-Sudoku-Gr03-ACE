@@ -1,117 +1,58 @@
-from itertools import product, combinations
-from z3 import Solver, Bool, And, Or, Not, sat
+from z3 import *
 from timeit import default_timer
 
-def solve_sudoku_bool_optimized(grid):
-    """
-    Encodage booléen rapide d'un Sudoku 9x9 avec Z3 en Python.
-    grid: itérable 9x9, 0 pour case vide, sinon [1..9].
+# Fonction pour résoudre un Sudoku avec Z3
+def solve_sudoku_with_z3(grid):
 
-    Retourne la solution (liste 9x9) ou None si insatisfaisable.
-    """
+    # Déclarez une matrice 9x9 de variables entières (Z3 variables)
+    cells = [[Int(f"cell_{i}_{j}") for j in range(9)] for i in range(9)]
 
-    # -- Création du solveur avec quelques paramètres autorisés --
     solver = Solver()
-    solver.set(timeout=10_000)   # 10 secondes de timeout
-    solver.set(threads=4)        # Exploiter 4 cœurs si possible
 
-    # -- Déclaration des variables booléennes x[i][j][d] --
-    # x[i][j][d] = True  <==>  la case (i,j) contient la valeur (d+1)
-    x = [[[Bool(f"x_{i}_{j}_{d}")
-            for d in range(9)]
-          for j in range(9)]
-         for i in range(9)]
-
-    constraints = []
-
-    # == 1) Contraintes "exactement une valeur par case" ==
-    #    On décompose en:
-    #    - "Au moins une" valeur
-    #    - "Au plus une" valeur : paires incompatibles
-    for i, j in product(range(9), range(9)):
-        # Au moins une
-        constraints.append(Or(*(x[i][j][d] for d in range(9))))
-
-        # Au plus une (éliminer les paires d, d')
-        for d1, d2 in combinations(range(9), 2):
-            constraints.append(Not(And(x[i][j][d1], x[i][j][d2])))
-
-    # == 2) Contraintes "chaque valeur apparaît une fois par ligne" ==
+    # Contrainte : Toutes les valeurs dans chaque cellule doivent être entre 1 et 9
     for i in range(9):
-        for d in range(9):
-            # Au moins une colonne j
-            constraints.append(Or(*(x[i][j][d] for j in range(9))))
-            # Au plus une (pairwise)
-            for j1, j2 in combinations(range(9), 2):
-                constraints.append(Not(And(x[i][j1][d], x[i][j2][d])))
+        for j in range(9):
+            solver.add(And(cells[i][j] >= 1, cells[i][j] <= 9))
 
-    # == 3) Contraintes "chaque valeur apparaît une fois par colonne" ==
+    # Contrainte : Les valeurs dans chaque ligne doivent être uniques
+    for i in range(9):
+        solver.add(Distinct(cells[i]))
+
+    # Contrainte : Les valeurs dans chaque colonne doivent être uniques
     for j in range(9):
-        for d in range(9):
-            # Au moins une ligne i
-            constraints.append(Or(*(x[i][j][d] for i in range(9))))
-            # Au plus une
-            for i1, i2 in combinations(range(9), 2):
-                constraints.append(Not(And(x[i1][j][d], x[i2][j][d])))
+        solver.add(Distinct([cells[i][j] for i in range(9)]))
 
-    # == 4) Contraintes "chaque valeur apparaît une fois par bloc 3x3" ==
-    for box_i in range(3):      # index du bloc ligne (0..2)
-        for box_j in range(3):  # index du bloc colonne (0..2)
-            for d in range(9):
-                # Récupère les 9 cases du bloc
-                block_vars = []
-                for di in range(3):
-                    for dj in range(3):
-                        i_ = 3 * box_i + di
-                        j_ = 3 * box_j + dj
-                        block_vars.append(x[i_][j_][d])
-                # Au moins une dans ce bloc
-                constraints.append(Or(*block_vars))
-                # Au plus une
-                for (v1, v2) in combinations(block_vars, 2):
-                    constraints.append(Not(And(v1, v2)))
+    # Contrainte : Les valeurs dans chaque bloc 3x3 doivent être uniques
+    for box_row in range(3):
+        for box_col in range(3):
+            solver.add(
+                Distinct(
+                    [
+                        cells[box_row * 3 + i][box_col * 3 + j]
+                        for i in range(3)
+                        for j in range(3)
+                    ]
+                )
+            )
 
-    # == 5) Contraintes "indices donnés" (cases déjà remplies) ==
-    for i, j in product(range(9), range(9)):
-        val = grid[i][j]
-        if val != 0:
-            # val est dans [1..9], on force x[i][j][val-1] = True
-            for d in range(9):
-                if d == val - 1:
-                    # doit être True
-                    constraints.append(x[i][j][d])
-                else:
-                    # doit être False
-                    constraints.append(Not(x[i][j][d]))
+    # Apportez les valeurs initiales de la grille dans le solveur comme des contraintes
+    for i in range(9):
+        for j in range(9):
+            if grid[i][j] != 0:  # Si on a une valeur prédéfinie (non vide)
+                solver.add(cells[i][j] == grid[i][j])
 
-    # == AJOUT DE TOUTES LES CONTRAINTES EN UNE FOIS ==
-    solver.add(*constraints)
-
-    # == Mesure du temps de résolution ==
-    start_time = default_timer()
-    result = solver.check()
-    end_time = default_timer()
-    solve_duration = (end_time - start_time) * 1000.0  # en ms
-
-    if result == sat:
-        print(f"Solution trouvée en {solve_duration:.2f} ms")
+    # Tentez de résoudre
+    if solver.check() == sat:
         model = solver.model()
-
-        # On reconstruit la grille solution en lisant le modèle
-        solution = [[0]*9 for _ in range(9)]
-        for i, j, d in product(range(9), range(9), range(9)):
-            if model[x[i][j][d]]:
-                solution[i][j] = d + 1
-        return solution
+        solved_grid = [[model[cells[i][j]].as_long() for j in range(9)] for i in range(9)]
+        return solved_grid
     else:
         print("Aucune solution trouvée.")
         return None
 
-# -------------------------------------------------------------------------
-# Exemple d'utilisation
-if __name__ == "__main__":
 
-    # Sudoku d'exemple
+# Définir la grille de Sudoku initiale (passée depuis le csharp ou explicitement pour travailler en autonomie)
+if 'instance' not in locals():
     instance = (
         (0, 0, 0, 0, 9, 4, 0, 3, 0),
         (0, 0, 0, 5, 1, 0, 0, 0, 7),
@@ -124,16 +65,15 @@ if __name__ == "__main__":
         (0, 4, 0, 9, 7, 0, 0, 0, 0),
     )
 
-    # Chrono global
-    t0 = default_timer()
-    sol = solve_sudoku_bool_optimized(instance)
-    t1 = default_timer()
-    total_ms = (t1 - t0) * 1000
+# Solve the Sudoku puzzle
+start = default_timer()
+result = solve_sudoku_with_z3(instance)
+execution = default_timer() - start
 
-    if sol:
-        print("Sudoku résolu :")
-        for row in sol:
-            print(row)
-        print(f"Temps total (construction + résolution + modélisation) = {total_ms:.2f} ms.")
-    else:
-        print("Pas de solution.")
+# Affichez la solution ou un message d'échec
+
+# if result:
+#     print("Sudoku résolu avec succès avec Z3 Solver:")
+#     for row in result:
+#         print(row)
+#     print("Le temps de résolution est de : ", execution * 1000, "ms")
